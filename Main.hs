@@ -1,107 +1,95 @@
+{-# LANGUAGE MultiWayIf, BangPatterns #-}
+
 module Main where
 
 import Control.Monad
 import System.IO
+import qualified Data.List as List
 
-square :: Int -> Pic
-square n = Pic $ replicate n (replicate n '#')
+newtype Tixel = Tixel { unTixel :: Char }
 
-triangle :: Int -> Pic
-triangle = Pic . aux
+instance Semigroup Tixel where
+  tx1@(Tixel px1) <> tx2 = if px1 == ' ' then tx2 else tx1
+
+instance Monoid Tixel where
+  mempty = Tixel ' '
+
+newtype Pic a = Pic ((Int, Int) -> a)
+
+instance Semigroup a => Semigroup (Pic a) where
+  (Pic f1) <> (Pic f2) = Pic $ \p -> (f1 p) <> (f2 p)
+
+instance Monoid a => Monoid (Pic a) where
+  mempty = Pic $ \p -> mempty
+
+instance Functor Pic where
+  fmap f (Pic pf) = Pic $ f . pf
+
+draw :: (Int, Int) -> Pic Tixel -> String
+draw (w, h) (Pic pf) =
+  List.intercalate
+    ['\n']
+    [[unTixel $ pf (x, y) | x <- [-hw..hw]] | y <- [-hh..hh]]
   where
-    aux :: Int -> [String]
-    aux 0 = []
-    aux n = replicate n 'T':aux (n-1)
+    (hw, hh) = (w `div` 2, h `div` 2)
 
-circle :: Int -> Pic
-circle r = Pic [ [ if x*x + y*y < r*r then 'S' else ' '
-                 | x <- [-r..r]
-                 ]
-               | y <- [-r..r]
-               ]
+square :: Monoid a => a -> Int -> Pic a
+square px n = Pic $ \(x, y) -> if abs x < n && abs y < n then px else mempty
 
-newtype Pic = Pic [String]
+poly :: a -> [(Int, Int)] -> Pic a
+poly = undefined
 
-draw :: Pic -> IO ()
-draw (Pic p) = do
+circle :: Monoid a => a -> Int -> Pic a
+circle px r = Pic $ \(x, y) -> if x * x + y * y < r * r then px else mempty
+
+crop :: Monoid a => (Int, Int) -> Pic a -> Pic a
+crop (w, h) (Pic f) = Pic $ \(x, y) ->
+  if abs x < (w `div` 2) && abs y < (h `div` 2)
+    then f (x, y)
+    else mempty
+
+scale :: (Int, Int) -> Pic a -> Pic a
+scale (sx, sy) (Pic f) = Pic $ \(x, y) -> f (sx * x, sy * y)
+
+translate :: (Int, Int) -> Pic a -> Pic a
+translate (dx, dy) (Pic f) = Pic $ \(x, y) -> f (x - dx, y - dy)
+
+window :: (Int, Int) -> Pic Tixel -> IO ()
+window (w, h) pic = do
+  -- attemping to enforce evaluation before writing, it does not work
+  let !picStr = draw (w, h) $ picView <> frame
   putStr "\ESC[2J"  -- clear screen
-  -- forM_ p putStrLn -- really slow
-  putStrLn $ unlines p -- also slow
-
--- Lines need to be padded on the right as well
--- This breaks the symmetry between the two functions
---  though: suspect it might be better done elsewhere
--- Right-padding is a waste of space: there isn't
---  anything to represent, except at the rendering
---  stage, where it can be done trivially (and flexibly)
-overlay :: Pic -> Pic -> Pic
-overlay (Pic p1) (Pic p2) = Pic $ zipWith combine pp1 pp2
+  putStrLn picStr
   where
-    maxHeight = max (length p1) (length p2)
-    pad n ss = ss <> replicate n " "
-    (pp1, pp2) = ( pad (maxHeight - length p1) p1
-                 , pad (maxHeight - length p2) p2)
-    combine = overlayLine
-
-overlayLine :: String -> String -> String
-overlayLine s1 s2 = zipWith combine p1 p2
-  where
-    pad n s = s <> replicate n ' '
-    maxLen = max (length s1) (length s2)
-    (p1, p2) = ( pad (maxLen - length s1) s1
-               , pad (maxLen - length s2) s2)
-    combine u o = if o == ' ' then u else o
-
--- isn't there a Functorish thing for this?
-fm f (Pic p) = Pic (f p)
-
-crop :: Int -> Int -> Pic -> Pic
-crop w h = fm (take h . map (take w))
-
-scale :: Int -> Int -> Pic -> Pic
-scale = undefined -- TODO
-
-translate :: Int -> Int -> Pic -> Pic
-translate x y = fm $ shift " " y . map (shift ' ' x)
-  where
-    shift pad n
-      | n > 0     = (replicate n pad <>)
-      | otherwise = drop (negate n)
-
-instance Semigroup Pic where
-  (<>) = overlay
-
-instance Monoid Pic where
-  mempty = Pic []
-
-window :: Int -> Int -> Pic -> IO ()
-window x y p = draw $ picView <> frame
-  where
-    surround e c = (e:c) ++ [e]
-    headTail = surround '+' $ replicate x '-'
-    blank    = replicate y $ surround '|' $ replicate x ' '
-    frame    = Pic . surround headTail $ blank
-    picView  = translate 1 1 . crop x y $ p
+    picView  = translate (1, 1) . crop (w, h) $ pic
+    frame    = translate (w `div` (-2), h `div` (-2)) $ Pic $ \pt@(x, y) -> Tixel $
+      if | pt == (0, 0) -> '+' --'┌'
+         | pt == (w - 1, 0) -> '+' --'┐'
+         | pt == (0, h - 1) -> '+' --'└'
+         | pt == (w - 1, h - 1) -> '+' --'┘'
+         | (x == 0 || x == w - 1) && (0 < y && y < h - 1) -> '|' --'│'
+         | (y == 0 || y == h - 1) && (0 < x && x < w - 1) -> '-' --'─'
+         | otherwise -> ' '
 
 main :: IO ()
 main = do
   hSetBuffering stdin NoBuffering
-  aux 0 0
+  aux (0, 0)
   where
-    aux x y = do
-      window 80 25
-        . translate x y
+    aux :: (Int, Int) -> IO ()
+    aux (x, y) = do
+      window (80, 25)
+        . translate (x, y)
         $ mconcat [
-            square 10
-          , triangle 5
-          , translate 20 10 (circle 8)
+            square (Tixel '#') 10
+          -- , triangle 5
+          , translate (20, 10) (circle (Tixel 'S') 8)
           ]
       c <- getChar
       case c of
-        'w' -> aux x (y + 1)
-        'a' -> aux (x - 1) y
-        's' -> aux x (y - 1)
-        'd' -> aux (x + 1) y
+        'w' -> aux (x, y + 1)
+        'a' -> aux (x - 1, y)
+        's' -> aux (x, y - 1)
+        'd' -> aux (x + 1, y)
         'q' -> pure ()
-        _   -> aux x y
-
+        _   -> aux (x, y)
