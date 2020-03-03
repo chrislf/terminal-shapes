@@ -2,7 +2,6 @@
 
 module Main where
 
-import Control.Monad
 import System.IO
 import qualified Data.List as List
 
@@ -17,10 +16,10 @@ instance Monoid Tixel where
 newtype Pic a = Pic ((Int, Int) -> a)
 
 instance Semigroup a => Semigroup (Pic a) where
-  (Pic f1) <> (Pic f2) = Pic $ \p -> (f1 p) <> (f2 p)
+  (Pic f1) <> (Pic f2) = Pic $ \p -> f1 p <> f2 p
 
 instance Monoid a => Monoid (Pic a) where
-  mempty = Pic $ \p -> mempty
+  mempty = Pic $ const mempty
 
 instance Functor Pic where
   fmap f (Pic pf) = Pic $ f . pf
